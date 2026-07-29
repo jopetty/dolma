@@ -14,7 +14,7 @@ from tokenizers import Tokenizer as BaseTokenizer
 from typing_extensions import TypedDict
 
 from dolma.cli.__main__ import main
-from dolma.tokenizer import Tokenizer, tokenize_in_parallel
+from dolma.tokenizer import Tokenizer, tokenize_file, tokenize_in_parallel
 
 TEST_DIR = Path(__file__).parent.parent.resolve()
 
@@ -424,6 +424,47 @@ class TestTokenizeSpecialTokens(TestCase):
         tokens_split = tokenizer_split.encode(text)
         self.assertEqual(tokens_default, tokens_split)
 
+
+class TestBatchedTokenizeFile(TestCase):
+    def test_batched_outputs_match_single_document_encoding(self):
+        documents = [
+            {"id": "one", "text": " first document "},
+            {"id": "empty", "text": " \n "},
+            {"id": "two", "text": "second document"},
+            {"id": "special", "text": "contains <|endoftext|> text"},
+            {"id": "large", "text": "x" * 100},
+        ]
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "documents.jsonl.gz"
+            with smart_open.open(path, "wt") as output:
+                for document in documents[:2]:
+                    output.write(json.dumps(document) + "\n")
+                output.write("not json\n")
+                for document in documents[2:]:
+                    output.write(json.dumps(document) + "\n")
+
+            kwargs = {
+                "eos_token_id": DOLMA2_TOKENIZER["eos_token_id"],
+                "pad_token_id": DOLMA2_TOKENIZER["pad_token_id"],
+                "encode_special_tokens": True,
+            }
+            outputs = list(
+                tokenize_file(
+                    tokenizer_name_or_path=DOLMA2_TOKENIZER["filename"],
+                    path=str(path),
+                    batch_size=2,
+                    batch_max_bytes=32,
+                    **kwargs,
+                )
+            )
+
+            tokenizer = Tokenizer.from_file(DOLMA2_TOKENIZER["filename"], **kwargs)
+            expected = [
+                (document["id"], line, tokenizer.encode(document["text"].strip()))
+                for line, document in ((1, documents[0]), (4, documents[2]), (5, documents[3]), (6, documents[4]))
+            ]
+            self.assertEqual([(output.id, output.loc, output.tokens) for output in outputs], expected)
+            self.assertEqual([output.src for output in outputs], [str(path)] * len(expected))
 
 class TestBosEosTokenAddition(TestCase):
     def setUp(self):

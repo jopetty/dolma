@@ -75,6 +75,8 @@ class MemMapParallelWriter(BaseParallelProcessor):
             )
         # Controls whether to refresh the tokenizer at the end of each batch
         refresh_tokenizer = kwargs.pop("refresh_tokenizer", None) or -1
+        tokenizer_batch_size = kwargs.pop("tokenizer_batch_size", None) or 64
+        tokenizer_batch_max_bytes = kwargs.pop("tokenizer_batch_max_bytes", None) or 8 * 1024 * 1024
 
         # Controls whether to use the fast tokenizer or not
         tokenizer_kwargs["use_fast"] = bool(kwargs.pop("use_fast_tokenizer", True))
@@ -120,6 +122,8 @@ class MemMapParallelWriter(BaseParallelProcessor):
                     tokenizer_name_or_path=tokenizer_name_or_path,
                     path=path,
                     refresh_tokenizer_every=refresh_tokenizer,
+                    batch_size=tokenizer_batch_size,
+                    batch_max_bytes=tokenizer_batch_max_bytes,
                     **tokenizer_kwargs,
                 )
             )
@@ -157,6 +161,8 @@ class MemMapParallelWriter(BaseParallelProcessor):
                                     tokenizer_name_or_path=tokenizer_name_or_path,
                                     path=path,
                                     refresh_tokenizer_every=refresh_tokenizer,
+                                    batch_size=tokenizer_batch_size,
+                                    batch_max_bytes=tokenizer_batch_max_bytes,
                                     **tokenizer_kwargs,
                                 )
                             )
@@ -198,6 +204,8 @@ class MemMapParallelWriter(BaseParallelProcessor):
                                     tokenizer_name_or_path=tokenizer_name_or_path,
                                     path=path,
                                     refresh_tokenizer_every=refresh_tokenizer,
+                                    batch_size=tokenizer_batch_size,
+                                    batch_max_bytes=tokenizer_batch_max_bytes,
                                     **tokenizer_kwargs,
                                 )
                             )
@@ -351,6 +359,8 @@ def tokenize_in_parallel(
     debug: bool = False,
     sample_ring_prop: bool = False,
     refresh_tokenizer: int = 0,
+    tokenizer_batch_size: int = 64,
+    tokenizer_batch_max_bytes: int = 8 * 1024 * 1024,
     use_fast_tokenizer: bool = True,
     text_field_name: str = "text",
     text_field_type: str = "str",
@@ -384,6 +394,8 @@ def tokenize_in_parallel(
             of files. Otherwise, it will go round-robin. Defaults to False.
         refresh_tokenizer (int, optional): Number of batches after which to refresh the tokenizer.
             Defaults to 0, which means the tokenizer will not be refreshed.
+        tokenizer_batch_size (int, optional): Maximum documents in each tokenizer batch. Defaults to 64.
+        tokenizer_batch_max_bytes (int, optional): Maximum UTF-8 bytes in each tokenizer batch. Defaults to 8 MiB.
         use_fast_tokenizer (bool, optional): Whether to use the fast tokenizer. Defaults to True.
         text_field_name (str, optional): Name of the text field in the input files. Defaults to "text".
         text_field_type (str, optional): Type of the text field in the input files. Defaults to "str".
@@ -441,6 +453,8 @@ def tokenize_in_parallel(
         sample_ring_prop=sample_ring_prop,
         use_fast_tokenizer=use_fast_tokenizer,
         refresh_tokenizer=refresh_tokenizer,
+        tokenizer_batch_size=tokenizer_batch_size,
+        tokenizer_batch_max_bytes=tokenizer_batch_max_bytes,
         text_field_name=text_field_name,
         text_field_type=text_field_type,
         id_field_name=id_field_name,

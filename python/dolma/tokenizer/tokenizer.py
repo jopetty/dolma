@@ -312,7 +312,7 @@ class Tokenizer:
             encoded_slice_iter = (
                 # the slicing operation is required if we have added a space in front of each paragraph
                 # during the `split_into_paragraphs` method.
-                encoded[pos][1:] if (self.tokenizer_has_prefix and pos > 0) else encoded[pos]
+                encoded[pos][1:] if (self.tokenizer_has_prefix and pos > start) else encoded[pos]
                 for pos in range(start, end)
             )
             merged.append(list(chain.from_iterable(encoded_slice_iter)))
@@ -454,11 +454,18 @@ def tokenize_file(
     id_field_name: Optional[str] = "id",
     id_field_type: type = str,
     refresh_tokenizer_every: int = 0,
+    batch_size: int = 64,
+    batch_max_bytes: int = 8 * 1024 * 1024,
     **tokenizer_kwargs,
 ) -> Generator[TokenizerOutput, None, None]:
     """Tokenize a file of documents using the provided tokenizer; file is expected to be a gzipped JSON lines
     file, each containing a field named `text`.
     """
+    if batch_size <= 0:
+        raise ValueError("batch_size must be positive")
+    if batch_max_bytes <= 0:
+        raise ValueError("batch_max_bytes must be positive")
+
     tokenizer = make_tokenizer(tokenizer_name_or_path, **tokenizer_kwargs)
     dtype = deepcopy(tokenizer.dtype)
 
@@ -480,6 +487,43 @@ def tokenize_file(
     )
     decoder = msgspec.json.Decoder(spec)
     force_refresh = False
+    batch: list[tuple[str, str, int]] = []
+    batch_bytes = 0
+
+    def flush_batch() -> list[TokenizerOutput]:
+        """Tokenize the pending records while retaining per-record failure handling."""
+        nonlocal batch, batch_bytes
+        if not batch:
+            return []
+
+        pending = batch
+        batch = []
+        batch_bytes = 0
+        texts = [text for _, text, _ in pending]
+        try:
+            token_batches = tokenizer.encode_batch(texts, add_special_tokens=True)
+        except Exception as ex:
+            # Maintain the old behavior if one input makes a batch fail: log
+            # and skip only failing records, not every valid record in it.
+            logger.warning("Error tokenizing batch from %s: %s", path, ex)
+            token_batches = []
+            for row_id, text, loc in pending:
+                try:
+                    token_batches.append(tokenizer.encode(text, add_special_tokens=True))
+                except Exception as record_ex:
+                    logger.warning("Error processing line %s:%d: %s", path, loc, record_ex)
+                    token_batches.append(None)  # type: ignore[arg-type]
+
+        outputs = []
+        for (row_id, _, loc), tokens in zip(pending, token_batches):
+            if tokens is None:
+                continue
+            if refresh_tokenizer_every:
+                # Extra copy to prevent memory leaks, matching the previous
+                # per-document tokenization path.
+                tokens = np.array(tokens, dtype=dtype)
+            outputs.append(TokenizerOutput.from_tokens(id=row_id, src=path, loc=loc, tokens=tokens))  # pyright: ignore
+        return outputs
 
     try:
         with smart_open.open(path, mode="rt") as input_stream:
@@ -494,16 +538,20 @@ def tokenize_file(
                         # skip empty docs
                         continue
 
-                    # the actual tokenization happens here
-                    tokens = tokenizer.encode(text, add_special_tokens=True)
+                    text_bytes = len(text.encode("utf-8"))
+                    if batch and (len(batch) >= batch_size or batch_bytes + text_bytes > batch_max_bytes):
+                        yield from flush_batch()
 
-                    if refresh_tokenizer_every:
-                        # extra copy to prevent memory leaks
-                        tokens = np.array(tokens, dtype=dtype)
+                    batch.append((row_id, text, i))
+                    batch_bytes += text_bytes
 
-                    yield TokenizerOutput.from_tokens(id=row_id, src=path, loc=i, tokens=tokens)  # pyright: ignore
+                    # An oversized document is retained and emitted as a
+                    # one-item batch instead of being dropped or split.
+                    refresh_due = (refresh_tokenizer_every > 0 and i % refresh_tokenizer_every == 0) or force_refresh
+                    if len(batch) >= batch_size or batch_bytes >= batch_max_bytes or refresh_due:
+                        yield from flush_batch()
 
-                    if (refresh_tokenizer_every > 0 and i % refresh_tokenizer_every == 0) or force_refresh:
+                    if refresh_due:
                         # to prevent memory leaks, we refresh the tokenizer every so often
                         del tokenizer
                         gc.collect()
@@ -516,8 +564,12 @@ def tokenize_file(
                     # in case of failure, we log the error and continue
                     # We refresh the tokenizer to prevent memory leaks from affecting the rest of the processing
                     logger.warning("Error processing line %s:%d: %s", path, i, ex)
+                    # Do not let a malformed record strand preceding valid
+                    # documents in a partially-filled batch.
+                    yield from flush_batch()
                     force_refresh = True
                     continue
+            yield from flush_batch()
     except Exception as ex:
         # more catastrophic error, so we log the error and re-raise
         logger.error("Error processing file %s", path, exc_info=ex)

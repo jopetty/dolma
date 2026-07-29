@@ -50,6 +50,14 @@ class TokenizerConfig:
         default=False,
         help="Whether to encode special tokens in the tokenized output, e.g. splitting '<s>' into '<', 's', '>'.",
     )
+    batch_size: int = field(
+        default=64,
+        help="Maximum documents to send to the tokenizer in one batch.",
+    )
+    batch_max_bytes: int = field(
+        default=8 * 1024 * 1024,
+        help="Maximum UTF-8 text bytes to send to the tokenizer in one batch.",
+    )
 
     def __post__init__(self):
         logger = get_logger(__file__)
@@ -230,6 +238,8 @@ class TokenizerCli(BaseCli):
                 sample_ring_prop=parsed_config.sample_ring_prop,
                 use_fast_tokenizer=parsed_config.tokenizer.fast,
                 refresh_tokenizer=parsed_config.tokenizer.refresh,
+                tokenizer_batch_size=parsed_config.tokenizer.batch_size,
+                tokenizer_batch_max_bytes=parsed_config.tokenizer.batch_max_bytes,
                 text_field_name=parsed_config.fields.text_field_name,
                 text_field_type=parsed_config.fields.text_field_type,
                 id_field_name=parsed_config.fields.id_field_name,
