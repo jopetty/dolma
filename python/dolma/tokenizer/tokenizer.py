@@ -500,8 +500,9 @@ def tokenize_file(
         batch = []
         batch_bytes = 0
         texts = [text for _, text, _ in pending]
+        token_batches: list[list[int] | None]
         try:
-            token_batches = tokenizer.encode_batch(texts, add_special_tokens=True)
+            token_batches = list(tokenizer.encode_batch(texts, add_special_tokens=True))
         except Exception as ex:
             # Maintain the old behavior if one input makes a batch fail: log
             # and skip only failing records, not every valid record in it.
@@ -512,12 +513,13 @@ def tokenize_file(
                     token_batches.append(tokenizer.encode(text, add_special_tokens=True))
                 except Exception as record_ex:
                     logger.warning("Error processing line %s:%d: %s", path, loc, record_ex)
-                    token_batches.append(None)  # type: ignore[arg-type]
+                    token_batches.append(None)
 
         outputs = []
-        for (row_id, _, loc), tokens in zip(pending, token_batches):
-            if tokens is None:
+        for (row_id, _, loc), maybe_tokens in zip(pending, token_batches):
+            if maybe_tokens is None:
                 continue
+            tokens = maybe_tokens
             if refresh_tokenizer_every:
                 # Extra copy to prevent memory leaks, matching the previous
                 # per-document tokenization path.
