@@ -71,6 +71,36 @@ class TruncationDirection(StrEnum):
     left = "left"
 
 
+class TokenizerBackend(StrEnum):
+    """Which library implements the fast tokenization path.
+
+    ``huggingface`` uses the original ``tokenizers`` Rust bindings; ``gigatoken`` uses the
+    newer, faster ``gigatoken`` library. Has no effect when ``use_fast=False``, since that
+    always uses the slow ``transformers`` tokenizer.
+    """
+
+    huggingface = "hf"
+    gigatoken = "gt"
+
+    @classmethod
+    def parse(cls, value: "str | TokenizerBackend") -> "TokenizerBackend":
+        if isinstance(value, TokenizerBackend):
+            return value
+
+        aliases = {
+            "hf": cls.huggingface,
+            "huggingface": cls.huggingface,
+            "gt": cls.gigatoken,
+            "gigatoken": cls.gigatoken,
+        }
+        normalized = str(value).strip().lower()
+        if normalized not in aliases:
+            raise DolmaConfigError(
+                f"Unknown tokenizer backend '{value}'; expected one of: hf, huggingface, gt, gigatoken."
+            )
+        return aliases[normalized]
+
+
 class Tokenizer:
     """
     A :class:`Tokenizer` is a light-weight wrapper around a HuggingFace :class:`tokenizers.Tokenizer`.
@@ -100,7 +130,14 @@ class Tokenizer:
         self.pad_token_id = pad_token_id
         # Gigatoken uses the HuggingFace tokenizer.json format directly, but
         # returns token IDs rather than HuggingFace Encoding objects.
-        self.is_fast = isinstance(self.base_tokenizer, gt.Tokenizer)
+        if isinstance(self.base_tokenizer, gt.Tokenizer):
+            self.backend: Optional[TokenizerBackend] = TokenizerBackend.gigatoken
+        elif isinstance(self.base_tokenizer, HFTokenizer):
+            self.backend = TokenizerBackend.huggingface
+        else:
+            # slow, transformers-backed tokenizer
+            self.backend = None
+        self.is_fast = self.backend is not None
 
         if self.pad_token_id is None:
             logger.warning("No pad token ID provided; using EOS token ID %s.", eos_token_id)
@@ -127,6 +164,8 @@ class Tokenizer:
     @encode_special_tokens.setter
     def encode_special_tokens(self, value: bool):
         self._encode_special_tokens = value
+        if self.backend == TokenizerBackend.huggingface:
+            self.base_tokenizer.encode_special_tokens = value  # pyright: ignore
 
     @cached_property
     def tokenizer_has_prefix(self) -> bool:
@@ -164,18 +203,24 @@ class Tokenizer:
         return HFTokenizer.from_str(json.dumps(self.config))
 
     def get_base_tokenizer_config(self) -> dict:
-        if self.is_fast:
+        if self.backend == TokenizerBackend.gigatoken:
             return self.base_tokenizer._hf_config()
 
+        # Rust HuggingFace tokenizers don't have a way to get the full configuration through Python bindings,
+        # so we hack around it by saving the tokenizer to a temporary file and reading the config.
         with TemporaryDirectory() as temp_dir:
-            self.save(temp_dir)
-            with open(f"{temp_dir}/tokenizer_config.json", mode="r", encoding="utf-8") as f:
+            config_path = f"{temp_dir}/tokenizer"
+            self.save(config_path)
+            if not self.is_fast:
+                config_path += "/tokenizer_config.json"
+
+            with open(config_path, mode="r", encoding="utf-8") as f:
                 return json.load(f)
 
     @property
     def vocab_size(self) -> int:
-        if self.is_fast:
-            return self.base_tokenizer.vocab_size
+        if self.backend == TokenizerBackend.huggingface:
+            return self.base_tokenizer.get_vocab_size()
         return self.base_tokenizer.vocab_size  # pyright: ignore
 
     @classmethod
@@ -198,16 +243,29 @@ class Tokenizer:
         return tokenizer
 
     @classmethod
-    def from_pretrained(cls, identifier: str, use_fast: bool = True, **kwargs) -> "Tokenizer":
+    def from_pretrained(
+        cls,
+        identifier: str,
+        use_fast: bool = True,
+        backend: "str | TokenizerBackend" = TokenizerBackend.huggingface,
+        **kwargs,
+    ) -> "Tokenizer":
         """
         Initialize a tokenizer from a pretrained tokenizer on the HuggingFace Hub.
 
         :param identifier: The identifier of a model on the Hub that contains a
             ``tokenizer.json`` file.
+        :param use_fast: Whether to use a fast (Rust-backed) tokenizer. If False, ``backend`` is
+            ignored and the slow ``transformers`` tokenizer is used instead.
+        :param backend: Which fast tokenizer implementation to use: ``"hf"``/``"huggingface"``
+            (default) or ``"gt"``/``"gigatoken"``. Only relevant when ``use_fast`` is True.
         :param kwargs: Other key word arguments passed to :class:`Tokenizer`.
         """
         if use_fast:
-            base_tokenizer = gt.Tokenizer(identifier)
+            if TokenizerBackend.parse(backend) == TokenizerBackend.gigatoken:
+                base_tokenizer = gt.Tokenizer(identifier)
+            else:
+                base_tokenizer = HFTokenizer.from_pretrained(identifier)
         else:
             assert TRANSFORMERS_AVAILABLE, "Cannot use slow tokenizers without transformers library installed."
             base_tokenizer = AutoTokenizer.from_pretrained(identifier, use_fast=False)
@@ -217,9 +275,11 @@ class Tokenizer:
 
     def save(self, filename: PathOrStr) -> None:
         """Save the tokenizer to a file."""
-        if self.is_fast:
+        if self.backend == TokenizerBackend.gigatoken:
             with open(filename, mode="w", encoding="utf-8") as f:
                 json.dump(self.base_tokenizer._hf_config(), f)
+        elif self.backend == TokenizerBackend.huggingface:
+            self.base_tokenizer.save(filename)  # pyright: ignore
         else:
             assert TRANSFORMERS_AVAILABLE, "Cannot save slow tokenizers without transformers library installed."
             self.base_tokenizer.save_pretrained(filename)  # pyright: ignore
@@ -234,17 +294,31 @@ class Tokenizer:
             logger.warning("pad_token_id mismatch: %s != %s", tokenizer.pad_token_id, id_)  # pyright: ignore
 
     @classmethod
-    def from_file(cls, filename: PathOrStr, use_fast: bool = True, **kwargs) -> "Tokenizer":
+    def from_file(
+        cls,
+        filename: PathOrStr,
+        use_fast: bool = True,
+        backend: "str | TokenizerBackend" = TokenizerBackend.huggingface,
+        **kwargs,
+    ) -> "Tokenizer":
         """
         Initialize a tokenizer from a file.
 
-        You can create those files with ``BaseTokenizer.save()``.
+        You can create those files with :meth:`Tokenizer.save`.
 
         :param filename: The name of a file containing a tokenizer specification.
+        :param use_fast: Whether to use a fast (Rust-backed) tokenizer. If False, ``backend`` is
+            ignored and the slow ``transformers`` tokenizer is used instead.
+        :param backend: Which fast tokenizer implementation to use: ``"hf"``/``"huggingface"``
+            (default) or ``"gt"``/``"gigatoken"``. Only relevant when ``use_fast`` is True.
         :param kwargs: Other key word arguments passed to :class:`Tokenizer`.
         """
         if use_fast:
-            base_tokenizer = gt.Tokenizer(filename)
+            if TokenizerBackend.parse(backend) == TokenizerBackend.gigatoken:
+                base_tokenizer = gt.Tokenizer(filename)
+            else:
+                # unlike gigatoken, the tokenizers Rust bindings require a str, not a PathLike
+                base_tokenizer = HFTokenizer.from_file(str(filename))
         else:
             assert TRANSFORMERS_AVAILABLE, "Cannot use slow tokenizers without transformers library installed."
             base_tokenizer = AutoTokenizer.from_pretrained(filename, use_fast=False)
@@ -357,6 +431,10 @@ class Tokenizer:
         return all_input_ids
 
     def _encode_fast_batch(self, inputs: List[str]) -> List[List[int]]:
+        if self.backend == TokenizerBackend.huggingface:
+            fast_seq = self.base_tokenizer.encode_batch(inputs, add_special_tokens=False)  # pyright: ignore
+            return [e.ids for e in fast_seq]
+
         # Gigatoken recognizes added special tokens by default, which matches
         # HuggingFace when ``encode_special_tokens`` is false. The opt-in flag
         # instead encodes the special-token text as ordinary text.
@@ -370,11 +448,11 @@ class Tokenizer:
         """
         Decode a list of token IDs to a string.
         """
-        if self.is_fast:
+        if self.backend == TokenizerBackend.gigatoken:
             if skip_special_tokens:
                 token_ids = [token_id for token_id in token_ids if token_id not in self.special_token_ids]
             return self.base_tokenizer.decode(token_ids).decode("utf-8", errors="replace")
-        return self.base_tokenizer.decode(token_ids, skip_special_tokens=skip_special_tokens)
+        return self.base_tokenizer.decode(token_ids, skip_special_tokens=skip_special_tokens)  # pyright: ignore
 
 
 def make_tokenizer(

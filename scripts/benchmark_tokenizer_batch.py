@@ -2,13 +2,14 @@
 
 Usage:
     uv run python scripts/benchmark_tokenizer_batch.py tokenizer.json documents.txt
+    uv run python scripts/benchmark_tokenizer_batch.py tokenizer.json documents.txt --backend gt
 """
 
 import argparse
 import time
 from pathlib import Path
 
-from dolma.tokenizer import Tokenizer
+from dolma.tokenizer import Tokenizer, TokenizerBackend
 
 
 def main() -> None:
@@ -16,10 +17,16 @@ def main() -> None:
     parser.add_argument("tokenizer", type=Path, help="HuggingFace-compatible tokenizer.json")
     parser.add_argument("documents", type=Path, help="UTF-8 file containing one document per line")
     parser.add_argument("--batch-size", type=int, default=64)
+    parser.add_argument(
+        "--backend",
+        type=TokenizerBackend.parse,
+        default=TokenizerBackend.huggingface,
+        help="Fast tokenizer backend to benchmark: hf/huggingface (default) or gt/gigatoken.",
+    )
     args = parser.parse_args()
 
     documents = [line.strip() for line in args.documents.read_text(encoding="utf-8").splitlines() if line.strip()]
-    tokenizer = Tokenizer.from_file(args.tokenizer)
+    tokenizer = Tokenizer.from_file(args.tokenizer, backend=args.backend)
 
     def run_singleton() -> int:
         return sum(len(tokenizer.encode(text, add_special_tokens=False)) for text in documents)
