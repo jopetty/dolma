@@ -602,7 +602,9 @@ def tokenize_file(
                 # Extra copy to prevent memory leaks, matching the previous
                 # per-document tokenization path.
                 tokens = np.array(tokens, dtype=dtype)
-            outputs.append(TokenizerOutput.from_tokens(id=row_id, src=path, loc=loc, tokens=tokens))  # pyright: ignore
+            outputs.append(
+                TokenizerOutput.from_tokens(id=row_id, src=path, loc=loc, tokens=tokens)
+            )  # pyright: ignore
         return outputs
 
     try:
@@ -627,7 +629,9 @@ def tokenize_file(
 
                     # An oversized document is retained and emitted as a
                     # one-item batch instead of being dropped or split.
-                    refresh_due = (refresh_tokenizer_every > 0 and i % refresh_tokenizer_every == 0) or force_refresh
+                    refresh_due = (
+                        refresh_tokenizer_every > 0 and i % refresh_tokenizer_every == 0
+                    ) or force_refresh
                     if len(batch) >= batch_size or batch_bytes >= batch_max_bytes or refresh_due:
                         yield from flush_batch()
 

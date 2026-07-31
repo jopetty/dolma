@@ -189,9 +189,7 @@ class TestTokenizerCli(TestCase):
             )
             self.assertEqual(special_tokens, 2)
 
-    def test_gpt_neo_e2e(
-        self, segment: bool = True, fast: bool = True, refresh: int = 0, backend: str = "hf"
-    ):
+    def test_gpt_neo_e2e(self, segment: bool = True, fast: bool = True, refresh: int = 0, backend: str = "hf"):
         config = {
             "destination": f"{TEST_DIR}/work/tokenizer/gpt-neo-segment",
             "documents": [
@@ -253,9 +251,7 @@ class TestTokenizerCli(TestCase):
             )
             self.assertEqual(special_tokens, 1)
 
-    def test_llama3_e2e(
-        self, segment: bool = True, fast: bool = True, refresh: int = 0, backend: str = "hf"
-    ):
+    def test_llama3_e2e(self, segment: bool = True, fast: bool = True, refresh: int = 0, backend: str = "hf"):
         config = {
             "destination": f"{TEST_DIR}/work/tokenizer/gpt-neo-segment",
             "documents": [
